@@ -1,10 +1,12 @@
 # Lab: WebSocket Frontend Integration & Deployment
 
-## Overview
+## Introduction
 
-Background task systems are only useful when users can see results as soon as they are produced. HTTP polling works for low-frequency updates but breaks down for fast-changing worker state, retries, and progress ticks. **WebSockets** solve this by keeping a single long-lived socket open between the browser and the server and pushing messages in either direction at any time.
+Real-time systems let users see task results and progress as soon as they are produced.
+In this lab, Celery workers publish task events through Redis Pub/Sub channels.
+A Python Socket.IO server forwards these events to connected clients for live updates.
+Finally, the complete system is deployed behind Nginx with WebSocket support on Poridhi Cloud.
 
-In this lab, you will extend the existing Celery stack with real-time push notifications. The worker publishes lifecycle events to a per-task **Redis pub/sub channel**, a **python-socketio** server subscribes to those channels and forwards messages to the right client room, and a small static frontend renders the live stream. Finally, you will deploy the whole system behind **nginx with WebSocket upgrade headers** on Poridhi Cloud (with a short AWS variant at the end).
 
 ### System overview
 
@@ -23,29 +25,43 @@ WebSocket server (python-socketio) ◄───┘
 Browser renders live updates
 ```
 
----
+### End-to-end message sequence
 
-## 1. Core Concepts & Architecture
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User browser
+    participant F as Flask API
+    participant W as Celery worker
+    participant R as Redis
+    participant S as WebSocket server
 
-### Key concepts
+    U->>F: POST /tasks {payload, fail_probability}
+    F-->>U: 202 {task_id}
+    U->>S: socket.emit('subscribe_task', {task_id})
+    S->>R: SUBSCRIBE task:<id>
 
-| Term              | Meaning |
-|-------------------|---------|
-| WebSocket         | A full-duplex connection over a single TCP socket; the `Upgrade: websocket` header in HTTP/1.1 swaps the protocol mid-handshake. |
-| Socket.IO         | A higher-level protocol on top of WebSocket that adds auto-reconnect, rooms, namespaces, and a polling fallback for restrictive networks. |
-| Socket.IO room    | A named group of clients the server can broadcast to with a single `emit`. Used here as `task_<task_id>` for per-task routing. |
-| Redis pub/sub     | Fire-and-forget message bus. Each `PUBLISH` reaches every active `SUBSCRIBE` on that channel; no message persists if nobody is listening. |
-| `--proxy-mode` upgrade headers | nginx must set `Connection: upgrade` + `Upgrade: websocket` so it forwards the WebSocket handshake instead of treating it as plain HTTP. |
-| `AsyncServer`     | The asyncio flavour of python-socketio; integrates with `uvicorn` for ASGI hosting. |
+    W->>R: PUBLISH task:<id> {state: STARTED}
+    R-->>S: message
+    S-->>U: task_update {state: STARTED}
+
+    loop for each progress step
+        W->>R: PUBLISH task:<id> {state: PROGRESS, progress}
+        R-->>S: message
+        S-->>U: task_update {state: PROGRESS}
+    end
+
+    W->>R: PUBLISH task:<id> {state: SUCCESS, result}
+    R-->>S: message
+    S-->>U: task_update {state: SUCCESS}
 
 ### Why pub/sub, not Celery events
 
 * Celery events are an internal monitoring stream; they are designed for Flower-style tooling, not for end-user UIs.
 * Per-task Redis channels give us a clean, stateless routing key — exactly one publisher, exactly the interested subscribers.
 
----
 
-## 2. Objectives & Target Structure
+## 2. Objectives 
 
 By the end of this lab you will:
 
@@ -54,7 +70,7 @@ By the end of this lab you will:
 3. Serve a small HTML/JS frontend that submits tasks and renders the live stream.
 4. Deploy the full stack behind nginx on Poridhi Cloud with WebSocket upgrade support.
 
-```
+## Project structure
 websocket-realtime-lab/
 ├── requirements.txt
 ├── celery_app.py
